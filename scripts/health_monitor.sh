@@ -12,8 +12,8 @@ if ! systemctl is-active --quiet nginx; then
     echo "$TIMESTAMP - CRITICAL - Nginx is NOT running" >> $LOG
 fi
 
-# Check 2 — Is Flask container running?
-if ! docker ps | grep -q blog-platform; then
+# Check 2 — Is task-manager container running?
+if ! docker ps | grep -q task-manager; then
     STATUS="CRITICAL"
     echo "$TIMESTAMP - CRITICAL - Flask container is NOT running" >> $LOG
 fi
