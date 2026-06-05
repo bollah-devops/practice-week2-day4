@@ -1,0 +1,256 @@
+---
+- name: Deploy task-manager with Docker and Nginx
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+          - python3-pip
+        state: present
+
+    - name: Add docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu jammy stable
+        state: present
+
+    - name: Update apt cache again
+      apt:
+        update_cache: yes
+
+    - name: Install Docker
+      apt:
+        name: docker-ce
+        state: present
+
+    - name: Install Docker Python SDK
+      pip:
+        name: docker
+        state: present
+
+    - name: Start and enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Pull task manager Docker image
+      docker_image:
+        name: tawa123/task-manager
+        tag: latest
+        source: pull
+
+    - name: Stop old container if running
+      docker_container:
+        name: task-manager
+        state: absent
+        force_kill: yes
+
+    - name: Run task manager container
+      docker_container:
+        name: task-manager
+        image: tawa123/task-manager:latest
+        state: started
+        restart_policy: always
+        ports:
+          - "5000:5000"
+
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Start and enable Nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Create Nginx reverse proxy config
+      copy:
+        dest: /etc/nginx/sites-available/task-manager
+        content: |
+          server {
+              listen 80;
+
+              location / {
+                  proxy_pass http://127.0.0.1:5000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+          }
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/task-manager
+        dest: /etc/nginx/sites-enabled/task-manager
+        state: link
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Verify app responds
+      uri:
+        url: http://localhost
+        status_code: 200
+
+    - name: Create webteam group
+      group:
+        name: webteam
+        state: present
+
+    - name: Create developer user
+      user:
+        name: developer
+        groups: webteam
+        append: yes
+        state: present
+
+    - name: Create webadmin user
+      user:
+        name: webadmin
+        groups: webteam
+        append: yes
+        state: present
+
+    - name: Create readonly user
+      user:
+        name: readonly
+        state: present
+
+    - name: Create web directory
+      file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+
+    - name: Deploy custom index.html
+      copy:
+        dest: /var/www/html/index.html
+        content: |
+          <html>
+          <head><title>Task Manager</title></head>
+          <body>
+          <h1>Task Manager deployed with Ansible</h1>
+          </body>
+          </html>
+
+    - name: Disable root SSH login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+
+    - name: Disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+
+    - name: Restart SSH service
+      service:
+        name: ssh
+        state: restarted
+
+    - name: Create script directory
+      file:
+        path: /opt/scripts
+        state: directory
+        mode: '0755'
+
+    - name: Deploy health check script
+      copy:
+        dest: /opt/scripts/healthcheck.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          echo "System Health Check"
+          date
+          uptime
+          free -h
+          df -h
+
+    - name: Schedule cron job every 5 minutes
+      cron:
+        name: "Health Check Cron"
+        minute: "*/5"
+        job: "/opt/scripts/healthcheck.sh >> /var/log/healthcheck.log"
+
+    - name: Create monitor log directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /var/log/monitor
+        - /var/log/monitor/reports
+
+    - name: Deploy health monitor script
+      copy:
+        src: ../scripts/health_monitor.sh
+        dest: /opt/scripts/health_monitor.sh
+        mode: '0755'
+
+    - name: Deploy alert checker script
+      copy:
+        src: ../scripts/alert_checker.sh
+        dest: /opt/scripts/alert_checker.sh
+        mode: '0755'
+
+    - name: Deploy daily report script
+      copy:
+        src: ../scripts/daily_report.sh
+        dest: /opt/scripts/daily_report.sh
+        mode: '0755'
+
+    - name: Schedule health monitor every minute
+      cron:
+        name: "health monitor"
+        minute: "*"
+        job: "/opt/scripts/health_monitor.sh"
+
+    - name: Schedule alert checker every 5 minutes
+      cron:
+        name: "alert checker"
+        minute: "*/5"
+        job: "/opt/scripts/alert_checker.sh"
+
+    - name: Schedule daily report at midnight
+      cron:
+        name: "daily report"
+        minute: "0"
+        hour: "0"
+        job: "/opt/scripts/daily_report.sh"
+
+    - name: Run health monitor once to verify
+      command: /opt/scripts/health_monitor.sh
+      become: true
+
+    - name: Show health log
+      command: cat /var/log/monitor/health.log
+      register: health_output
+
+    - name: Display health log
+      debug:
+        msg: "{{ health_output.stdout_lines }}"
